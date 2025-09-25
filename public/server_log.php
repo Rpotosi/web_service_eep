@@ -1,38 +1,24 @@
 <?php
-// serve_log.php
-$config = require __DIR__ . '/../config.php';
+// server_log.php
 
-$baseDir = rtrim($config['storage_dir'], '/\\'); // p. ej. /var/www/app/storage
-$logsDir = $baseDir; // o "$baseDir/logs" si guardas allí
+// Esperamos 'path' que contiene la ruta de disco ABSOLUTA.
+if (isset($_GET['path'])) {
+    // La ruta completa viene por la URL, decodificamos por si tiene espacios/barras.
+    $logPath = urldecode($_GET['path']); 
 
-$name = isset($_GET['name']) ? $_GET['name'] : '';
-if (!preg_match('/^[A-Za-z0-9._-]+$/', $name)) {
-  http_response_code(400); exit('Nombre inválido');
+    // Verifica si el archivo existe usando la ruta ABSOLUTA del sistema de archivos (D:\xampp\.../storage/logs/...)
+    if (file_exists($logPath)) {
+        // Lee el archivo de log
+        $logContent = file_get_contents($logPath);
+
+        // Establece los encabezados correctos para mostrarlo como texto plano
+        header('Content-Type: text/plain');
+        echo $logContent;
+    } else {
+        // Log no encontrado. Podría ser un error de permisos o la ruta está mal
+        echo "Error: Log no encontrado. Verifique la ruta del archivo y los permisos de lectura del servidor Apache. Ruta enviada: " . htmlspecialchars($logPath);
+    }
+} else {
+    echo "Error: No se proporcionó una ruta de archivo ('path' no definido).";
 }
-
-$file = $logsDir . '/' . $name;
-if (!is_file($file)) {
-  http_response_code(404); exit('Archivo no encontrado');
-}
-
-// Mostrar como texto plano (inline) cuando raw=1
-if (isset($_GET['raw'])) {
-  header('Content-Type: text/plain; charset=UTF-8');
-  header('X-Content-Type-Options: nosniff');
-  readfile($file);
-  exit;
-}
-
-// (Opcional) mantener descarga si algún día vuelves a habilitarla:
-// if (!empty($_GET['download'])) {
-//   header('Content-Type: application/octet-stream');
-//   header('Content-Length: ' . filesize($file));
-//   header('Content-Disposition: attachment; filename="'.basename($file).'"');
-//   readfile($file);
-//   exit;
-// }
-
-// Por defecto, también inline
-header('Content-Type: text/plain; charset=UTF-8');
-header('X-Content-Type-Options: nosniff');
-readfile($file);
+?>
