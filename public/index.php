@@ -8,10 +8,12 @@ if (!file_exists($configPath)) {
     die('Falta config.php');
 }
 $config = require $configPath;
-require __DIR__ . '/../lib/SiredClient.php';
+// Asegúrate de que SiredClient.php exista en la ruta correcta
+require __DIR__ . '/../lib/SiredClient.php'; 
 
 // CSRF: genera si no existe
 if (empty($_SESSION['csrf'])) {
+    // Generación segura de token CSRF
     $_SESSION['csrf'] = bin2hex(function_exists('random_bytes') ? random_bytes(16) : openssl_random_pseudo_bytes(16));
 }
 
@@ -27,7 +29,7 @@ $result = null;
 
 /**
  * ───────────────────────────────────────────────────────────
- * GET ?check=<SolicitudId>[&ajax=1]  → consultar estado / intentar bajar log
+ * GET ?check=<SolicitudId>[&ajax=1] → consultar estado / intentar bajar log
  * - Si &ajax=1: responde JSON (para autopolling)
  * - Si no: guarda en sesión y redirige (PRG)
  * ───────────────────────────────────────────────────────────
@@ -40,35 +42,36 @@ if (isset($_GET['check']) && $_GET['check'] !== '') {
         $solId = preg_replace('/[^a-f0-9-]/i','', (string)$_GET['check']); // sanitiza
         if ($solId) {
             $client = new SiredClient($config);
-            $token = $client->getToken();
+            $token  = $client->getToken();
             $status = $client->getSolicitud($token, $solId);
-            $log  = $client->downloadLog($token, $solId); // null si aún no está
+            $log    = $client->downloadLog($token, $solId); // null si aún no está
 
             if ($isAjax) {
                 echo json_encode([
-                    'ok'     => true,
+                    'ok' => true,
                     'solicitudId' => $solId,
-                    'status'   => $status,
-                    'state'    => (is_array($status) && isset($status['Estado'])) ? $status['Estado'] : null,
-                    'logPath'   => $log ?: null,
-                    'logFile'   => $log ? basename($log) : null,
+                    'status' => $status,
+                    // Se extrae el estado para el JS
+                    'state' => (is_array($status) && isset($status['Estado'])) ? $status['Estado'] : null, 
+                    'logPath' => $log ?: null,
+                    'logFile' => $log ? basename($log) : null,
                 ], JSON_UNESCAPED_UNICODE);
                 exit;
             }
 
             $_SESSION['result'] = [
-                'ok'     => true,
-                'upload'   => ['SolicitudId' => $solId],
+                'ok' => true,
+                'upload' => ['SolicitudId' => $solId],
                 'solicitudId' => $solId,
-                'status'   => $status,
-                'logPath'   => $log ?: null,
-                'runFile'   => null,
+                'status' => $status,
+                'logPath' => $log ?: null,
+                'runFile' => null,
             ];
         }
     } catch (Throwable $e) {
         if ($isAjax) {
             http_response_code(500);
-            echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
             exit;
         }
         $_SESSION['errors'] = [$e->getMessage()];
@@ -84,8 +87,8 @@ if (isset($_GET['check']) && $_GET['check'] !== '') {
 if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         // CSRF check
-        $csrfPost = isset($_POST['csrf']) ? $_POST['csrf'] : '';
-        $csrfSess = isset($_SESSION['csrf']) ? $_SESSION['csrf'] : '';
+        $csrfPost = $_POST['csrf'] ?? ''; // Usando ?? para compatibilidad (asumiendo PHP 7+)
+        $csrfSess = $_SESSION['csrf'] ?? '';
         if (!function_exists('hash_equals')) {
             // compat PHP<5.6
             function hash_equals($a,$b){ if(strlen($a)!==strlen($b))return false; $r=0; for($i=0;$i<strlen($a);$i++){$r|=ord($a[$i])^ord($b[$i]);} return $r===0; }
@@ -95,18 +98,18 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
             self_redirect();
         }
 
-        // Inputs (sin ?? para compat)
-        $fecha  = isset($_POST['fecha'])  ? trim($_POST['fecha'])  : '';
-        $tipo  = isset($_POST['tipo'])  ? trim($_POST['tipo'])  : '';
-        $agente = isset($_POST['agente']) ? trim($_POST['agente']) : '';
-        $mercado = isset($_POST['mercado']) ? trim($_POST['mercado']) : '';
-        $correo = isset($_POST['correo']) ? trim($_POST['correo']) : '';
+        // Inputs (usando ?? para limpieza)
+        $fecha  = trim($_POST['fecha'] ?? '');
+        $tipo   = trim($_POST['tipo'] ?? '');
+        $agente = trim($_POST['agente'] ?? '');
+        $mercado = trim($_POST['mercado'] ?? '');
+        $correo = trim($_POST['correo'] ?? '');
 
         // Esperar resultado: solo true si vale "1"
         $esperar = (isset($_POST['esperar']) && $_POST['esperar'] === '1');
 
-        $timeout = max(30, (int)(isset($_POST['timeout']) ? $_POST['timeout'] : 300));
-        $pollSec = max(3, (int)(isset($_POST['poll'])  ? $_POST['poll']  : 5));
+        $timeout = max(30, (int)($_POST['timeout'] ?? 300));
+        $pollSec = max(3,  (int)($_POST['poll'] ?? 5));
 
         // Validaciones mínimas
         if ($fecha === '' || $tipo === '' || $agente === '' || $mercado === '') {
@@ -114,6 +117,10 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
         }
         if (!isset($_FILES['zip']) || !isset($_FILES['zip']['error']) || $_FILES['zip']['error'] !== UPLOAD_ERR_OK) {
             $errors[] = "Debe adjuntar el archivo .zip.";
+        }
+        // Validación de correo electrónico
+        if ($correo !== '' && !filter_var($correo, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = "El formato del correo electrónico es inválido.";
         }
 
         if (!empty($errors)) {
@@ -127,15 +134,16 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
         }
 
         $zipTmp = $_FILES['zip']['tmp_name'];
-        $zipName = isset($_FILES['zip']['name']) ? basename($_FILES['zip']['name']) : 'archivo.zip';
+        $zipName = $_FILES['zip']['name'] ?? 'archivo.zip';
 
         // Sanitiza nombre (permite letras, números, _, ., -)
-        $safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', $zipName);
+        $safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', basename($zipName));
         if ($safe === '' || $safe === null) $safe = 'archivo.zip';
 
         $storageDir = rtrim($config['storage_dir'], '/\\');
         if (!is_dir($storageDir)) {
-            if (!@mkdir($storageDir, 0775, true) && !is_dir($storageDir)) {
+            // Mejor evitar el @ y dejar que la excepción se lance
+            if (!mkdir($storageDir, 0775, true) && !is_dir($storageDir)) {
                 throw new RuntimeException('No se pudo crear el directorio de storage: ' . $storageDir);
             }
         }
@@ -144,7 +152,7 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
         $zipPath = $storageDir . '/' . date('Ymd_His') . '_' . $safe;
 
         // Mueve el archivo
-        if (!@move_uploaded_file($zipTmp, $zipPath)) {
+        if (!move_uploaded_file($zipTmp, $zipPath)) {
             throw new RuntimeException('No se pudo mover el ZIP a storage.');
         }
 
@@ -191,26 +199,26 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
             'Parametros'   => array(
                 'FechaDeCarga' => $fecha,
                 'TipoCarga'  => $tipo,
-                'Agente'    => $agente,
-                'Mercado'   => $mercado,
-                'Correo'    => $correo,
-                'Zip'     => $zipPath
+                'Agente'     => $agente,
+                'Mercado'    => $mercado,
+                'Correo'     => $correo,
+                'Zip'      => $zipPath
             ),
             'UploadRespuesta' => $upload,
-            'SolicitudId'   => $solId,
+            'SolicitudId'  => $solId,
             'ConsultaEstado' => $status,
-            'LogPath'     => $logPath
+            'LogPath'    => $logPath
         );
         $runFile = $client->saveRun($run);
 
         // Resultado final → sesión → redirect (PRG)
         $_SESSION['result'] = array(
-            'ok'     => true,
-            'upload'   => $upload,
+            'ok' => true,
+            'upload' => $upload,
             'solicitudId' => $solId,
-            'status'   => $status,
-            'logPath'   => $logPath,
-            'runFile'   => $runFile
+            'status' => $status,
+            'logPath' => $logPath,
+            'runFile' => $runFile
         );
 
         self_redirect();
@@ -305,6 +313,7 @@ if (!empty($_SESSION['errors'])) {
             outline: none; transition: border-color .18s, box-shadow .18s, transform .02s;
         }
         .input:focus, .select:focus{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(157,188,43,.22); }
+        .input:read-only { background: var(--border); color: var(--muted); }
         .hint{ font-size:12px; color: var(--muted); }
 
         .drop{ border:1.5px dashed var(--border); background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0));
@@ -381,7 +390,7 @@ if (!empty($_SESSION['errors'])) {
 
     <div class="container">
         <div class="header" style="display:flex; justify-content:center; align-items:center; gap:1rem; margin:1rem 0;">
-            <img src="../img/logo.webp" alt="Logo de la empresa" style="max-height:60px; width:auto; display:block;"> <br>
+            <img src="../img/logo.webp" alt="Logo EEP S.A E.S.P" style="max-height:60px; width:auto; display:block;"> <br>
             <span class="badge" style="padding:0.5em 1em; border-radius:12px; font-weight:bold; font-size:1rem; white-space:nowrap;">
                 ⚡ SIRED · Carga de eventos ⚡
             </span>
@@ -461,6 +470,10 @@ if (!empty($_SESSION['errors'])) {
                 </div>
 
                 <div class="actions">
+                    <input type="hidden" name="esperar" value="1">
+                    <input type="hidden" name="timeout" value="300">
+                    <input type="hidden" name="poll" value="5">
+
                     <button class="btn" type="submit" id="submitBtn">Enviar a SIRED XM</button>
                     <span class="hint">Se generará bitácora y, si aplica, se descargará el log.</span>
                 </div>
@@ -499,21 +512,21 @@ if (!empty($_SESSION['errors'])) {
                                 </p>
                             <div style="margin-top:8px; display:flex; gap:.6rem; flex-wrap:wrap;">
                                 <a class="btn" id="btnViewLog"
-                                  data-file="<?= htmlspecialchars($logPath, ENT_QUOTES, 'UTF-8') ?>"
-                                  href="server_log.php?path=<?= urlencode($logPath) ?>" role="button">Ver log</a>
+                                    data-file="<?= htmlspecialchars($logPath, ENT_QUOTES, 'UTF-8') ?>"
+                                    href="server_log.php?path=<?= urlencode($logPath) ?>" role="button">Ver log</a>
                             </div>
 
                                 <div id="logPanel" class="json" style="display:none; margin-top:12px; white-space:pre-wrap;"></div>
                             </div>
                         <?php else: ?>
-                            <p class="hint" style="margin-top:10px">Aún no hay log disponible. Se consultará automáticamente…</p>
+                            <p class="hint" id="initial-poll-hint" style="margin-top:10px">Aún no hay log disponible. Se consultará automáticamente…</p>
                         <?php endif; ?>
                     </div>
 
                     <?php if (!empty($result['solicitudId'])): ?>
                         <div id="autoPoll"
-                                 data-solicitud="<?= htmlspecialchars((string)$result['solicitudId'], ENT_QUOTES, 'UTF-8') ?>"
-                                 data-haslog="<?= !empty($result['logPath']) ? '1' : '0' ?>"></div>
+                                     data-solicitud="<?= htmlspecialchars((string)$result['solicitudId'], ENT_QUOTES, 'UTF-8') ?>"
+                                     data-haslog="<?= !empty($result['logPath']) ? '1' : '0' ?>"></div>
                     <?php endif; ?>
 
                     <?php if (!empty($result['runFile'])): ?>
@@ -533,11 +546,11 @@ if (!empty($_SESSION['errors'])) {
 (function () {
     // Elementos
     var fileInput = document.getElementById('zip');
-    var hint   = document.getElementById('fileHint');
-    var pick   = document.getElementById('pick');
-    var drop   = document.getElementById('drop');
+    var hint      = document.getElementById('fileHint');
+    var pick      = document.getElementById('pick');
+    var drop      = document.getElementById('drop');
     var submitBtn = document.getElementById('submitBtn');
-
+    
     // Formatea y pinta el nombre/tamaño
     function updateHintFromFile(file) {
         if (!file) { hint.textContent = 'Ningún archivo seleccionado'; return; }
@@ -581,18 +594,7 @@ if (!empty($_SESSION['errors'])) {
         });
     }
 
-    // Feedback al enviar
-    var form = document.querySelector('form[method="post"]');
-    if (form && submitBtn) {
-        form.addEventListener('submit', function () {
-            startPreloader();         // overlay + progreso
-            submitBtn.textContent = 'Enviando…';
-            submitBtn.setAttribute('disabled', 'disabled');
-            submitBtn.style.opacity = '.8';
-        });
-    }
-
-    // ==== Preloader ====
+    // ==== Preloader Functions ==== 
     var pre = document.getElementById('preloader');
     var preBar = document.getElementById('preBar');
     var prePct = document.getElementById('prePct');
@@ -604,7 +606,7 @@ if (!empty($_SESSION['errors'])) {
         document.body.setAttribute('aria-busy','true');
         document.body.style.overflow = 'hidden';
 
-        var duration = 8000; // simula hasta 97% y el 100% se pone en unload
+        var duration = 8000; 
         var start = performance.now();
 
         preTimer = setInterval(function(){
@@ -630,7 +632,36 @@ if (!empty($_SESSION['errors'])) {
         window.addEventListener('beforeunload', finish, {once:true});
     }
 
-    // === Ver/Ocultar log inline ===
+    function stopPreloader(){
+        if(!pre) return;
+        
+        // Detiene el temporizador de animación
+        if(preTimer){ clearInterval(preTimer); preTimer = null; }
+        
+        // Muestra el 100% final y oculta
+        if(preBar && prePct){
+            preBar.style.width = '100%';
+            prePct.textContent = '100%';
+        }
+        
+        pre.style.display = 'none';
+        document.body.removeAttribute('aria-busy');
+        document.body.style.overflow = ''; // Restaura el scroll
+    }
+    
+    // Feedback al enviar (INICIA PRELOADER)
+    var form = document.querySelector('form[method="post"]');
+    if (form && submitBtn) {
+        form.addEventListener('submit', function () {
+            startPreloader();  // iniciar preloader
+            submitBtn.textContent = 'Enviando…';
+            submitBtn.setAttribute('disabled', 'disabled');
+            submitBtn.style.opacity = '.8';
+        });
+    }
+
+
+    // === Ver/Ocultar log inline (Ajuste para usar 'path' en lugar de 'name') ===
     document.addEventListener('click', function (e) {
         const btn = e.target.closest('#btnViewLog, #btnHideLog');
         if (!btn) return;
@@ -648,16 +679,16 @@ if (!empty($_SESSION['errors'])) {
         }
 
         // Cargar y mostrar
-        // 'path' ahora contendrá la RUTA ABSOLUTA COMPLETA.
-        const path = btn.getAttribute('data-file'); 
-        if (!path) return;
+        const filePath = btn.getAttribute('data-file'); // Obtenemos la ruta completa
+        if (!filePath) return;
 
         btn.textContent = 'Cargando…';
-        // Se llama a server_log.php con la ruta completa en el parámetro 'path'.
-        fetch('server_log.php?path=' + encodeURIComponent(path) + '&raw=1', { cache: 'no-store' })
+        
+        // <<< CORRECCIÓN APLICADA AQUÍ >>>
+        // El script server_log.php espera el parámetro 'path', no 'name'
+        fetch('server_log.php?path=' + encodeURIComponent(filePath) + '&raw=1', { cache: 'no-store' })
             .then(r => {
-                // El script 'server_log.php' debe devolver 200 OK
-                if (!r.ok) throw new Error('No se pudo abrir el log. (Error de servidor/ruta)');
+                if (!r.ok) throw new Error('No se pudo abrir el log. (HTTP Status: ' + r.status + ')');
                 return r.text();
             })
             .then(txt => {
@@ -672,14 +703,16 @@ if (!empty($_SESSION['errors'])) {
             });
     });
 
-    // ==== Auto-polling de estado y log ====
+    // ==== Auto-polling de estado y log ==== 
     (function(){
         var marker = document.getElementById('autoPoll');
         if (!marker) return;
 
         var solicitudId = marker.dataset.solicitud || "";
         var yaTieneLog = marker.dataset.haslog === '1';
-        if (!solicitudId || yaTieneLog) return;
+        
+        // Si no hay SolicitudId o ya tenemos el log, no iniciamos el polling
+        if (!solicitudId || yaTieneLog) return; 
 
         var tries = 0, maxTries = 60; // ~5 min con every=5s
         var every = 5000;
@@ -695,13 +728,12 @@ if (!empty($_SESSION['errors'])) {
         }
 
         function mountLogUI(logPath){
-            // Usamos la RUTA COMPLETA para data-file y para el parámetro 'path' del href.
-            var logPathEscaped = escapeHtml(logPath); 
+            var logPathEscaped = escapeHtml(logPath);
             var html = ''
                 + '<div style="margin:10px 0 0">'
                 + ' <p><strong>Log guardado en:</strong> <code>' + logPathEscaped + '</code></p>'
                 + ' <div style="margin-top:8px; display:flex; gap:.6rem; flex-wrap:wrap;">'
-                // data-file='RUTA COMPLETA' y href='server_log.php?path=RUTA COMPLETA'
+                // Aquí se sigue usando el enlace normal con 'path'
                 + '  <a class="btn" id="btnViewLog" data-file="' + logPathEscaped + '" href="server_log.php?path=' + encodeURIComponent(logPath) + '" role="button">Ver log</a>'
                 + ' </div>'
                 + ' <div id="logPanel" class="json" style="display:none; margin-top:12px; white-space:pre-wrap;"></div>'
@@ -709,31 +741,106 @@ if (!empty($_SESSION['errors'])) {
             logBox.innerHTML = html;
         }
 
+        function showValidationAlert(type, message) {
+            const container = statusBox.closest('.app__body');
+            // Elimina alertas previas para no duplicar
+            document.querySelectorAll('.app + .notice').forEach(el => el.remove()); 
+            
+            let alertHtml = '';
+            if (type === 'ok') {
+                alertHtml = '<div style="margin-top:12px" class="notice notice--ok">✅ ' + message + '</div>';
+            } else if (type === 'error') {
+                alertHtml = '<div style="margin-top:12px" class="notice notice--error">⚠️ ' + message + '</div>';
+            }
+            // Inserta la alerta después del contenedor principal (.app)
+            container.closest('.app').insertAdjacentHTML('afterend', alertHtml); 
+        }
+
         function tick(){
             tries++;
             fetch('?check=' + encodeURIComponent(solicitudId) + '&ajax=1', { cache: 'no-store' })
                 .then(r => r.json())
                 .then(data => {
-                    if (data && data.status && statusBox) {
-                        try {
-                            statusBox.textContent = JSON.stringify(data.status, null, 2);
-                        } catch (_) { /* noop */ }
+                    if (data.ok) {
+                        // 1. Actualiza el estado JSON
+                        var jsonStatus = JSON.stringify(data.status || { info: 'Estado no disponible' }, null, 4);
+                        statusBox.innerHTML = escapeHtml(jsonStatus);
+
+                        var estado = data.state || '';
+                        var isFinal = ['Exitosa', 'Fallido', 'Reemplazado'].includes(estado);
+
+                        // 2. Si es estado final o ya tiene log, detiene el polling
+                        if (isFinal || data.logPath) {
+                            clearInterval(timer);
+                            timer = null;
+                            
+                            // Detener el Preloader al finalizar (éxito/fallo/reemplazo)
+                            stopPreloader(); 
+                            
+                            // Mostrar alerta de validación
+                            if (estado === 'Exitosa') {
+                                showValidationAlert('ok', 'La solicitud ha finalizado con éxito.');
+                            } else if (estado === 'Fallido') {
+                                showValidationAlert('error', 'La solicitud ha fallado. Revisa el log para más detalles.');
+                            } else if (estado === 'Reemplazado') {
+                                showValidationAlert('ok', 'La solicitud ha sido reemplazada.');
+                            }
+
+                            if (data.logPath && !yaTieneLog) {
+                                // 3. Monta la UI del log si ya está disponible
+                                mountLogUI(data.logPath);
+                                yaTieneLog = true;
+                            }
+                        } else if (tries >= maxTries) {
+                            clearInterval(timer);
+                            timer = null;
+                            
+                            // Detener el Preloader por Timeout
+                            stopPreloader(); 
+                            
+                            showValidationAlert('error', 'Tiempo de espera agotado. El proceso sigue en SIRED.');
+                            // Mensaje de tiempo de espera agotado en el JSON de estado
+                            statusBox.innerHTML = escapeHtml(
+                                JSON.stringify({ error: 'Tiempo de espera agotado. Consulta manual si es necesario.' }, null, 4)
+                            );
+                        }
+                    } else {
+                        clearInterval(timer);
+                        timer = null;
+                        
+                        // Detener el Preloader por error de consulta
+                        stopPreloader(); 
+                        
+                        showValidationAlert('error', 'Error al consultar estado: ' + (data.error || 'Error desconocido'));
+                        statusBox.innerHTML = escapeHtml(
+                            JSON.stringify({ error: data.error || 'Error desconocido al consultar estado' }, null, 4)
+                        );
                     }
-                    if (data && data.logPath) {
-                        mountLogUI(data.logPath);
-                        clearInterval(timer); timer = null;
-                        return;
-                    }
-                    if (tries >= maxTries) { clearInterval(timer); timer = null; }
                 })
-                .catch(() => { /* silencioso */ });
+                .catch(err => {
+                    clearInterval(timer);
+                    timer = null;
+                    
+                    // Detener el Preloader por error de conexión
+                    stopPreloader(); 
+                    
+                    showValidationAlert('error', 'Error de conexión: No se pudo conectar con el servidor.');
+                    statusBox.innerHTML = escapeHtml(
+                        JSON.stringify({ error: 'Error de conexión: ' + err.message }, null, 4)
+                    );
+                });
         }
 
         timer = setInterval(tick, every);
-        tick();
+        
+        // Ocultar el mensaje de espera inicial si existe y se inicia el polling
+        var initialHint = document.getElementById('initial-poll-hint');
+        if (initialHint) {
+             initialHint.style.display = 'none';
+        }
+        tick(); // Primera ejecución inmediata
     })();
-
-})(); // <<— IMPORTANTE: cierra la IIFE
+})();
 </script>
 
 </body>
