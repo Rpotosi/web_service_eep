@@ -1,13 +1,5 @@
 <?php
 
-/** Inicio del service **/
-require __DIR__ . '/../vendor/autoload.php';
-
-
-$dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/..');
-
-
-// ───────────────────────────────────────────────────────────
 // index.php — PRG + CSRF + fixes
 // ───────────────────────────────────────────────────────────
 session_start();
@@ -34,15 +26,36 @@ function self_redirect() {
 $errors = [];
 $result = null;
 
-// ── GET para reconsultar estado y bajar log cuando el timeout fue corto ──
+/**
+ * ───────────────────────────────────────────────────────────
+ * GET ?check=<SolicitudId>[&ajax=1]  → consultar estado / intentar bajar log
+ *  - Si &ajax=1: responde JSON (para autopolling)
+ *  - Si no: guarda en sesión y redirige (PRG)
+ * ───────────────────────────────────────────────────────────
+ */
 if (isset($_GET['check']) && $_GET['check'] !== '') {
+  $isAjax = isset($_GET['ajax']);
+  if ($isAjax) header('Content-Type: application/json; charset=utf-8');
+
   try {
-    $solId = preg_replace('/[^a-f0-9-]/i','', $_GET['check']); // sanitiza
+    $solId = preg_replace('/[^a-f0-9-]/i','', (string)$_GET['check']); // sanitiza
     if ($solId) {
       $client = new SiredClient($config);
       $token  = $client->getToken();
       $status = $client->getSolicitud($token, $solId);
       $log    = $client->downloadLog($token, $solId); // null si aún no está
+
+      if ($isAjax) {
+        echo json_encode([
+          'ok'          => true,
+          'solicitudId' => $solId,
+          'status'      => $status,
+          'state'       => (is_array($status) && isset($status['Estado'])) ? $status['Estado'] : null,
+          'logPath'     => $log ?: null,
+          'logFile'     => $log ? basename($log) : null,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+      }
 
       $_SESSION['result'] = [
         'ok'          => true,
@@ -54,14 +67,21 @@ if (isset($_GET['check']) && $_GET['check'] !== '') {
       ];
     }
   } catch (Throwable $e) {
+    if ($isAjax) {
+      http_response_code(500);
+      echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+      exit;
+    }
     $_SESSION['errors'] = [$e->getMessage()];
   }
-  self_redirect();
+  if (!$isAjax) self_redirect();
 }
 
-// ───────────────────────────────────────────────────────────
-// POST (procesa subida y luego REDIRIGE SIEMPRE)
-// ───────────────────────────────────────────────────────────
+/**
+ * ───────────────────────────────────────────────────────────
+ * POST (procesa subida y luego REDIRIGE SIEMPRE)
+ * ───────────────────────────────────────────────────────────
+ */
 if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
   try {
     // CSRF check
@@ -103,33 +123,31 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
     }
 
     // Guardar ZIP en storage
-if (!isset($_FILES['zip']['tmp_name']) || !is_uploaded_file($_FILES['zip']['tmp_name'])) {
-  throw new RuntimeException('No se recibió un archivo ZIP válido.');
-}
+    if (!isset($_FILES['zip']['tmp_name']) || !is_uploaded_file($_FILES['zip']['tmp_name'])) {
+      throw new RuntimeException('No se recibió un archivo ZIP válido.');
+    }
 
-$zipTmp  = $_FILES['zip']['tmp_name'];
-$zipName = isset($_FILES['zip']['name']) ? basename($_FILES['zip']['name']) : 'archivo.zip';
+    $zipTmp  = $_FILES['zip']['tmp_name'];
+    $zipName = isset($_FILES['zip']['name']) ? basename($_FILES['zip']['name']) : 'archivo.zip';
 
-// Sanitiza nombre (permite letras, números, _, ., -)
-$safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', $zipName);
-if ($safe === '' || $safe === null) {
-  $safe = 'archivo.zip';
-}
+    // Sanitiza nombre (permite letras, números, _, ., -)
+    $safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', $zipName);
+    if ($safe === '' || $safe === null) $safe = 'archivo.zip';
 
-$storageDir = rtrim($config['storage_dir'], '/\\');
-if (!is_dir($storageDir)) {
-  if (!@mkdir($storageDir, 0775, true) && !is_dir($storageDir)) {
-    throw new RuntimeException('No se pudo crear el directorio de storage: ' . $storageDir);
-  }
-}
+    $storageDir = rtrim($config['storage_dir'], '/\\');
+    if (!is_dir($storageDir)) {
+      if (!@mkdir($storageDir, 0775, true) && !is_dir($storageDir)) {
+        throw new RuntimeException('No se pudo crear el directorio de storage: ' . $storageDir);
+      }
+    }
 
-// Ruta final con timestamp para evitar choques
-$zipPath = $storageDir . '/' . date('Ymd_His') . '_' . $safe;
+    // Ruta final con timestamp para evitar choques
+    $zipPath = $storageDir . '/' . date('Ymd_His') . '_' . $safe;
 
-// Mueve el archivo
-if (!@move_uploaded_file($zipTmp, $zipPath)) {
-  throw new RuntimeException('No se pudo mover el ZIP a storage.');
-}
+    // Mueve el archivo
+    if (!@move_uploaded_file($zipTmp, $zipPath)) {
+      throw new RuntimeException('No se pudo mover el ZIP a storage.');
+    }
 
     // Flujo SIRED
     $client  = new SiredClient($config);
@@ -137,18 +155,18 @@ if (!@move_uploaded_file($zipTmp, $zipPath)) {
     $upload  = $client->uploadZip($token, $zipPath, $fecha, $tipo, $agente, $mercado, $correo);
 
     // === EXTRAER SolicitudId cuando viene embebido en "respuesta" (texto) ===
-      $solId = null;
-      if (is_array($upload)) {
-          if (isset($upload['SolicitudId'])) {
-              $solId = $upload['SolicitudId'];
-          } elseif (isset($upload['Id'])) {
-              $solId = $upload['Id'];
-          } elseif (isset($upload['respuesta']) && is_string($upload['respuesta'])) {
-              if (preg_match('/[0-9a-fA-F-]{36}/', $upload['respuesta'], $m)) {
-                  $solId = $m[0];
-              }
-          }
+    $solId = null;
+    if (is_array($upload)) {
+      if (isset($upload['SolicitudId'])) {
+        $solId = $upload['SolicitudId'];
+      } elseif (isset($upload['Id'])) {
+        $solId = $upload['Id'];
+      } elseif (isset($upload['respuesta']) && is_string($upload['respuesta'])) {
+        if (preg_match('/[0-9a-fA-F-]{36}/', $upload['respuesta'], $m)) {
+          $solId = $m[0];
+        }
       }
+    }
 
     $status  = null;
     $logPath = null;
@@ -203,37 +221,6 @@ if (!@move_uploaded_file($zipTmp, $zipPath)) {
     self_redirect();
   }
 }
-
-// ── GET ?check=<SolicitudId>  → consulta estado y baja el log si ya existe
-if (isset($_GET['check']) && $_GET['check'] !== '') {
-    try {
-        $solId  = (string)$_GET['check'];
-        $client = new SiredClient($config);
-
-        // 1) token
-        $token  = $client->getToken();
-
-        // 2) consultar estado
-        $status = $client->getSolicitud($token, $solId);
-
-        // 3) intentar descargar log (si el endpoint ya lo tiene listo)
-        $logPath = $client->downloadLog($token, $solId); // string|NULL
-
-        // 4) guardar en sesión y redirigir (PRG)
-        $_SESSION['result'] = [
-            'ok'          => true,
-            'upload'      => ['SolicitudId' => $solId],
-            'solicitudId' => $solId,
-            'status'      => $status,
-            'logPath'     => $logPath,
-            'runFile'     => null,
-        ];
-    } catch (Throwable $e) {
-        $_SESSION['errors'] = [$e->getMessage()];
-    }
-    self_redirect();
-}
-
 
 // ───────────────────────────────────────────────────────────
 // GET (después del redirect): mostrar y limpiar sesión
@@ -348,236 +335,33 @@ if (!empty($_SESSION['errors'])) {
 
     .json{
       background:white;
-     /* background: rgba(17,24,39,.6);*/
       border: 1px solid var(--border);
       border-radius: 12px; padding: 12px; overflow:auto; white-space:pre-wrap; word-break: break-word;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px;
     }
     .footer-hint{ color: var(--muted); font-size: 12.5px; margin-top: 14px; }
 
-/** inicia los estilos para responsive**/
-    .header {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 1rem;
-  margin: 1rem 0;
-  flex-wrap: wrap; /* permite que se acomode en columnas si no cabe */
-  text-align: center;
-}
-
-.header .logo {
-  max-height: 60px;
-  width: auto;
-  display: block;
-}
-
-.header .badge {
-  background: #f0f0f0;
-  color: #333;
-  padding: 0.5em 1em;
-  border-radius: 12px;
-  font-weight: bold;
-  font-size: 1rem;
-  white-space: nowrap;
-}
-
-/* Responsive: en móviles, logo arriba y badge abajo */
-@media (max-width: 600px) {
-  .header {
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-  .header .badge {
-    font-size: 0.9rem;
-    white-space: normal; /* permite que el texto salte de línea si es necesario */
-  }
-}
-
-/** Finaliza los estilos para responsive**/
-
-/* ===== EEP Theme overrides (logo-based) ===== */
-:root{
-  /* Paleta del logo */
-  --eep-green: #9DBC2B;        /* anillo verde */
-  --eep-green-700:#7EA122;
-  --eep-green-900:#5D7C17;
-  --eep-charcoal:#4E4E4E;      /* texto PUTUMAYO */
-  --eep-charcoal-900:#2F2F2F;  /* fondos oscuros */
-  --eep-silver:#D9D9D9;        /* esfera gris clara */
-  --eep-gray-100:#F4F4F4;      /* fondo claro */
-  --eep-gray-200:#ECECEC;
-  --eep-gray-300:#E2E2E2;
-
-  /* Mapea tus variables existentes al nuevo tema */
-  --bg: var(--eep-gray-100);
-  --card:#FFFFFF;
-  --text: var(--eep-charcoal-900);
-  --muted:#6B6B6B;
-  --border: var(--eep-gray-300);
-  --input:#FAFAFA;
-  --accent: var(--eep-green);      /* antes azul */
-  --accent-2: var(--eep-green-700);
-
-  --danger-bg:#2a0f13; --danger:#ff6b6b; --danger-br:#5c1d22;
-  --ok-bg:#10251a; --ok:#34d399; --ok-br:#1d3b2b;
-
-  --shadow: 0 10px 30px rgba(0,0,0,.08);
-  --radius:16px;
-}
-
-/* Modo oscuro acorde al logo (carbón + verde) */
-@media (prefers-color-scheme: dark){
-  :root{
-    --bg: #191919;
-    --card:#1F1F1F;
-    --text:#EDEDED;
-    --muted:#A9A9A9;
-    --border:#2A2A2A;
-    --input:#222;
-    --shadow: 0 10px 30px rgba(0,0,0,.40);
-  }
-}
-
-/* Fondo sin azules, con viñeta sutil gris/verde */
-body{
-  background:
-    radial-gradient(1100px 700px at 0% -20%, rgba(157,188,43,.06), transparent 60%),
-    linear-gradient(180deg, rgba(0,0,0,.02), rgba(0,0,0,0)),
-    var(--bg);
-}
-
-/* Encabezados y chips */
-.badge{
-  background: linear-gradient(135deg, rgba(157,188,43,.10), rgba(157,188,43,.06));
-  border:1px solid var(--border);
-  color: var(--eep-charcoal-900);
-}
-
-/* Tarjeta app con guiño verde */
-.app{
-  background: linear-gradient(180deg, rgba(157,188,43,.03), rgba(255,255,255,0));
-  border:1px solid var(--border);
-}
-.app__header{
-  background: linear-gradient(180deg, rgba(157,188,43,.08), rgba(157,188,43,0));
-  border-bottom:1px solid var(--border);
-}
-.app__title{ color: var(--eep-charcoal-900); }
-.app__subtitle{ color: var(--muted); }
-
-/* Inputs y focus ring verdes */
-.input,.select{
-  background: var(--input);
-  border:1px solid var(--border);
-  color: var(--text);
-}
-.input:focus,.select:focus{
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(157,188,43,.22);
-}
-
-/* Zona de drop con énfasis en verde */
-.drop{ border-color: var(--border); }
-.drop.is-drag{
-  border-color: var(--accent);
-  background: rgba(157,188,43,.08);
-}
-
-/* Botón primario en verde EEP (sin cambiar tu markup) */
-.btn{
-  background: linear-gradient(180deg, var(--eep-green), var(--eep-green));
-  color: #fff;
-  box-shadow:
-    0 10px 20px rgba(157,188,43,.28),
-    inset 0 -1px 0 rgba(0,0,0,.2);
-}
-.btn:hover{
-  transform: translateY(-1px);
-  box-shadow:
-    0 14px 28px rgba(157,188,43,.35),
-    inset 0 -1px 0 rgba(0,0,0,.2);
-}
-.btn:active{
-  transform: translateY(0);
-  box-shadow:
-    0 10px 20px rgba(157,188,43,.28),
-    inset 0 -1px 0 rgba(0,0,0,.25);
-}
-
-/* Cajas JSON y notices más neutras */
-.json{
-  background:#fff;
-  border:1px solid var(--border);
-  color: var(--eep-charcoal-900);
-}
-
-/* Header responsive (quita los inline styles del HTML si quieres) */
-.header{
-  display:flex; justify-content:center; align-items:center;
-  gap:1rem; margin:1rem 0; flex-wrap:wrap; text-align:center;
-}
-.header .logo{ max-height:60px; width:auto; display:block; }
-.header .badge{ font-weight:700; }
-
-/* Pequeños detalles */
-.hint{ color: var(--muted); }
-.label{ color: var(--muted); }
-.actions{ border-top:1px solid var(--border); }
-
-/** preloader */
-
-/* ==== Preloader (EEP theme) ==== */
-#preloader{
-  position: fixed; inset: 0; display: none;
-  align-items: center; justify-content: center;
-  background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
-  z-index: 9999;
-}
-.preloader-card{
-  width: min(480px, 92vw);
-  background: var(--card); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  box-shadow: var(--shadow); padding: 20px; text-align: center;
-}
-.preloader-title{ font-weight: 800; margin-bottom: 6px; }
-.preloader-sub{ color: var(--muted); font-size: 13px; margin-bottom: 12px; }
-
-.progress-track{
-  height: 12px; border-radius: 999px; overflow: hidden;
-  background: var(--input); border: 1px solid var(--border);
-}
-.progress-bar{
-  height: 100%; width: 0%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  transition: width .18s ease;
-}
-.percent{ margin-top: 8px; font-weight: 700; }
-
-
-
   </style>
 </head>
 <body>
   <div id="preloader" aria-hidden="true">
-  <div class="preloader-card" role="status" aria-live="polite">
-    <div class="preloader-title">Enviando a SIRED XM…</div>
-    <div class="preloader-sub">No cierres esta ventana.</div>
-    <div class="progress-track" aria-label="Progreso de carga">
-      <div class="progress-bar" id="preBar"></div>
+    <div class="preloader-card" role="status" aria-live="polite">
+      <div class="preloader-title">Enviando a SIRED XM…</div>
+      <div class="preloader-sub">No cierres esta ventana.</div>
+      <div class="progress-track" aria-label="Progreso de carga">
+        <div class="progress-bar" id="preBar"></div>
+      </div>
+      <div class="percent" id="prePct">0%</div>
     </div>
-    <div class="percent" id="prePct">0%</div>
   </div>
-</div>
 
   <div class="container">
-   <div class="header" style="display:flex; justify-content:center; align-items:center; gap:1rem; margin:1rem 0;">
-  <img src="../img/logo.webp" alt="Logo de la empresa" style="max-height:60px; width:auto; display:block;"> <br>
-  <span class="badge" style="background:#f0f0f0; color:#333; padding:0.5em 1em; border-radius:12px; font-weight:bold; font-size:1rem; white-space:nowrap;">
-    ⚡ SIRED · Carga de eventos ⚡
-  </span>
-</div>
-
+    <div class="header" style="display:flex; justify-content:center; align-items:center; gap:1rem; margin:1rem 0;">
+      <img src="../img/logo.webp" alt="Logo de la empresa" style="max-height:60px; width:auto; display:block;"> <br>
+      <span class="badge" style="background:#f0f0f0; color:#333; padding:0.5em 1em; border-radius:12px; font-weight:bold; font-size:1rem; white-space:nowrap;">
+        ⚡ SIRED · Carga de eventos ⚡
+      </span>
+    </div>
 
     <div class="app">
       <div class="app__header">
@@ -626,10 +410,9 @@ body{
             <div class="col-6">
               <div class="field">
                 <label class="label">Mercado</label>
-                  <input class="input" name="mercado" value="PUTM" readonly>
+                <input class="input" name="mercado" value="PUTM" readonly>
               </div>
             </div>
-
 
             <div class="col-6">
               <div class="field">
@@ -650,100 +433,86 @@ body{
                 </label>
               </div>
             </div>
-<!---
-            <div class="col-4">
-              <div class="field">
-                <label class="label">Esperar resultado</label>
-                <select class="select" name="esperar">
-                  <option value="0">No</option>
-                  <option value="1">Sí</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="col-4">
-              <div class="field">
-                <label class="label">Timeout (seg)</label>
-                <input class="input" name="timeout" type="number" min="30" value="300" inputmode="numeric">
-              </div>
-            </div>
-
-            <div class="col-4">
-              <div class="field">
-                <label class="label">Polling (seg)</label>
-                <input class="input" name="poll" type="number" min="3" value="5" inputmode="numeric">
-              </div>
-            </div>
-  ---->          
           </div>
         </div>
 
         <div class="actions">
           <button class="btn" type="submit" id="submitBtn">Enviar a SIRED XM</button>
-         <span class="hint">Se generará bitácora y, si aplica, se descargará el log.</span>
+          <span class="hint">Se generará bitácora y, si aplica, se descargará el log.</span>
         </div>
       </form>
     </div>
 
-<!-- Mensajes -->
-<?php if (!empty($errors)): foreach ($errors as $e): ?>
-  <div style="margin-top:12px" class="notice notice--error">⚠️ <?= htmlspecialchars($e, ENT_QUOTES, 'UTF-8') ?></div>
-<?php endforeach; endif; ?>
+    <!-- Mensajes -->
+    <?php if (!empty($errors)): foreach ($errors as $e): ?>
+      <div style="margin-top:12px" class="notice notice--error">⚠️ <?= htmlspecialchars($e, ENT_QUOTES, 'UTF-8') ?></div>
+    <?php endforeach; endif; ?>
 
-<?php if (!empty($result) && !empty($result['ok'])): ?>
-  <div style="margin-top:12px" class="notice notice--ok">✅ Envío realizado.</div>
+    <?php if (!empty($result) && !empty($result['ok'])): ?>
+      <div style="margin-top:12px" class="notice notice--ok">✅ Envío realizado.</div>
 
-  <div class="app" style="margin-top:10px">
-    <div class="app__body">
-      <h3 style="margin:0 0 8px">Respuesta de carga</h3>
-      <div class="json"><?= htmlspecialchars(json_encode($result['upload'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8') ?></div>
+      <div class="app" style="margin-top:10px">
+        <div class="app__body">
+          <h3 style="margin:0 0 8px">Respuesta de carga</h3>
+          <div class="json"><?= htmlspecialchars(json_encode($result['upload'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8') ?></div>
 
-      <?php if (!empty($result['solicitudId'])): ?>
-        <p style="margin:10px 0 0"><strong>SolicitudId:</strong>
-          <?= htmlspecialchars((string)$result['solicitudId'], ENT_QUOTES, 'UTF-8') ?>
-        </p>
-      <?php endif; ?>
+          <?php if (!empty($result['solicitudId'])): ?>
+            <p style="margin:10px 0 0"><strong>SolicitudId:</strong>
+              <?= htmlspecialchars((string)$result['solicitudId'], ENT_QUOTES, 'UTF-8') ?>
+            </p>
+          <?php endif; ?>
 
-      <?php if (!empty($result['status'])): ?>
-        <h3 style="margin:18px 0 8px">Estado</h3>
-        <div class="json"><?= htmlspecialchars(json_encode($result['status'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8') ?></div>
-      <?php endif; ?>
+          <?php if (!empty($result['status'])): ?>
+            <h3 style="margin:18px 0 8px">Estado</h3>
+            <div id="statusJson" class="json">
+              <?= htmlspecialchars(json_encode($result['status'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8') ?>
+            </div>
+          <?php else: ?>
+            <h3 style="margin:18px 0 8px">Estado</h3>
+            <div id="statusJson" class="json">Consultando…</div>
+          <?php endif; ?>
 
-      <?php if (!empty($result['logPath'])): ?>
-      <?php $logFile = basename((string)$result['logPath']); ?>
-      <div style="margin:10px 0 0">
-        <p><strong>Log guardado en:</strong>
-          <code><?= htmlspecialchars((string)$result['logPath'], ENT_QUOTES, 'UTF-8') ?></code>
-        </p>
+          <div id="logContainer">
+            <?php if (!empty($result['logPath'])): ?>
+              <?php $logFile = basename((string)$result['logPath']); ?>
+              <div style="margin:10px 0 0">
+                <p><strong>Log guardado en:</strong>
+                  <code><?= htmlspecialchars((string)$result['logPath'], ENT_QUOTES, 'UTF-8') ?></code>
+                </p>
 
-        <div style="margin-top:8px; display:flex; gap:.6rem; flex-wrap:wrap;">
-          <a class="btn" id="btnViewLog"
-            data-file="<?= htmlspecialchars($logFile, ENT_QUOTES, 'UTF-8') ?>"
-            href="#"
-            role="button">Ver log</a>
+                <div style="margin-top:8px; display:flex; gap:.6rem; flex-wrap:wrap;">
+                  <a class="btn" id="btnViewLog"
+                    data-file="<?= htmlspecialchars($logFile, ENT_QUOTES, 'UTF-8') ?>"
+                    href="../storage/logs" role="button">Ver log</a>
+                </div>
+
+                <!-- Panel donde se mostrará el log -->
+                <div id="logPanel" class="json" style="display:none; margin-top:12px; white-space:pre-wrap;"></div>
+              </div>
+            <?php else: ?>
+              <p class="hint" style="margin-top:10px">Aún no hay log disponible. Se consultará automáticamente…</p>
+            <?php endif; ?>
+          </div>
+
+          <?php if (!empty($result['solicitudId'])): ?>
+            <div id="autoPoll"
+                 data-solicitud="<?= htmlspecialchars((string)$result['solicitudId'], ENT_QUOTES, 'UTF-8') ?>"
+                 data-haslog="<?= !empty($result['logPath']) ? '1' : '0' ?>"></div>
+          <?php endif; ?>
+
+          <?php if (!empty($result['runFile'])): ?>
+            <p style="margin:6px 0 0">Bitácora: <code><?= htmlspecialchars((string)$result['runFile'], ENT_QUOTES, 'UTF-8') ?></code></p>
+          <?php endif; ?>
         </div>
-
-        <!-- Panel donde se mostrará el log -->
-        <div id="logPanel" class="json" style="display:none; margin-top:12px; white-space:pre-wrap;"></div>
       </div>
     <?php endif; ?>
 
-
-      <?php if (!empty($result['runFile'])): ?>
-        <p style="margin:6px 0 0">Bitácora: <code><?= htmlspecialchars((string)$result['runFile'], ENT_QUOTES, 'UTF-8') ?></code></p>
-      <?php endif; ?>
-    </div>
+    <!-- <p class="footer-hint">Tip: usa el <strong>select de Agente</strong> para evitar errores de permisos. Si ves 403, solicita habilitación del agente en SIRED.</p>-->
   </div>
-<?php endif; ?>
-
-
-
-   <!-- <p class="footer-hint">Tip: usa el <strong>select de Agente</strong> para evitar errores de permisos. Si ves 403, solicita habilitación del agente en SIRED.</p>-->
+  <br>
+  <div style="text-align:center; margin-top:1rem;">
+    <p class="footer-hint">Desarrollado Por: Ing.Richard Potosi</p>
   </div>
-<br>  
-<div style="text-align:center; margin-top:1rem;">
-  <p class="footer-hint">Desarrollado Por: Ing.Richard Potosi</p>
-</div>
 
 <script>
 (function () {
@@ -814,86 +583,138 @@ body{
   var prePct = document.getElementById('prePct');
   var preTimer = null;
 
- function startPreloader(){
-  if(!pre) return;
-  pre.style.display = 'flex';
-  document.body.setAttribute('aria-busy','true');
-  document.body.style.overflow = 'hidden';
+  function startPreloader(){
+    if(!pre) return;
+    pre.style.display = 'flex';
+    document.body.setAttribute('aria-busy','true');
+    document.body.style.overflow = 'hidden';
 
-  var duration = 8000; // duración en milisegundos (5s)
-  var start = performance.now();
+    var duration = 8000;
+    var start = performance.now();
 
-  preTimer = setInterval(function(){
-    var elapsed = performance.now() - start;
-    var pct = Math.min(97, Math.round((elapsed / duration) * 97));
-    preBar.style.width = pct + '%';
-    prePct.textContent = pct + '%';
+    preTimer = setInterval(function(){
+      var elapsed = performance.now() - start;
+      var pct = Math.min(97, Math.round((elapsed / duration) * 97));
+      preBar.style.width = pct + '%';
+      prePct.textContent = pct + '%';
 
-    // si pasa el tiempo, mantenlo en 97% hasta que termine el redirect
-    if (elapsed >= duration) {
-      clearInterval(preTimer);
-      preTimer = null;
-    }
-  }, 80);
+      if (elapsed >= duration) {
+        clearInterval(preTimer);
+        preTimer = null;
+      }
+    }, 80);
 
-  // Cuando la página se vaya a descargar, fuerza 100%
-  var finish = function(){
-    if(preTimer){ clearInterval(preTimer); preTimer = null; }
-    if(preBar && prePct){
-      preBar.style.width = '100%';
-      prePct.textContent = '100%';
-    }
-  };
-  window.addEventListener('pagehide', finish, {once:true});
-  window.addEventListener('beforeunload', finish, {once:true});
-}
-
-
-// === Ver/Ocultar log inline ===
-document.addEventListener('click', function (e) {
-  const btn = e.target.closest('#btnViewLog, #btnHideLog');
-  if (!btn) return;
-
-  e.preventDefault();
-  const panel = document.getElementById('logPanel');
-
-  // Ocultar
-  if (btn.id === 'btnHideLog') {
-    panel.style.display = 'none';
-    panel.textContent = '';
-    btn.textContent = 'Ver log';
-    btn.id = 'btnViewLog';
-    return;
+    var finish = function(){
+      if(preTimer){ clearInterval(preTimer); preTimer = null; }
+      if(preBar && prePct){
+        preBar.style.width = '100%';
+        prePct.textContent = '100%';
+      }
+    };
+    window.addEventListener('pagehide', finish, {once:true});
+    window.addEventListener('beforeunload', finish, {once:true});
   }
 
-  // Cargar y mostrar
-  const name = btn.getAttribute('data-file');
-  if (!name) return;
+  // === Ver/Ocultar log inline ===
+  document.addEventListener('click', function (e) {
+    const btn = e.target.closest('#btnViewLog, #btnHideLog');
+    if (!btn) return;
 
-  btn.textContent = 'Cargando…';
-  fetch('serve_log.php?name=' + encodeURIComponent(name) + '&raw=1', { cache: 'no-store' })
-    .then(r => {
-      if (!r.ok) throw new Error('No se pudo abrir el log.');
-      return r.text();
-    })
-    .then(txt => {
-      panel.textContent = txt;
-      panel.style.display = 'block';
-      btn.textContent = 'Ocultar log';
-      btn.id = 'btnHideLog';
-    })
-    .catch(err => {
-      alert(err.message);
+    e.preventDefault();
+    const panel = document.getElementById('logPanel');
+
+    // Ocultar
+    if (btn.id === 'btnHideLog') {
+      panel.style.display = 'none';
+      panel.textContent = '';
       btn.textContent = 'Ver log';
-    });
-});
+      btn.id = 'btnViewLog';
+      return;
+    }
 
+    // Cargar y mostrar
+    const name = btn.getAttribute('data-file');
+    if (!name) return;
+
+    btn.textContent = 'Cargando…';
+    fetch('serve_log.php?name=' + encodeURIComponent(name) + '&raw=1', { cache: 'no-store' })
+      .then(r => {
+        if (!r.ok) throw new Error('No se pudo abrir el log.');
+        return r.text();
+      })
+      .then(txt => {
+        panel.textContent = txt;
+        panel.style.display = 'block';
+        btn.textContent = 'Ocultar log';
+        btn.id = 'btnHideLog';
+      })
+      .catch(err => {
+        alert(err.message);
+        btn.textContent = 'Ver log';
+      });
+  });
+
+  // ==== Auto-polling de estado y log ====
+  (function(){
+    var marker = document.getElementById('autoPoll');
+    if (!marker) return;
+
+    var solicitudId = marker.dataset.solicitud || "";
+    var yaTieneLog  = marker.dataset.haslog === '1';
+    if (!solicitudId || yaTieneLog) return;
+
+    var tries = 0, maxTries = 60; // ~5 min con every=5s
+    var every = 5000;
+    var timer = null;
+
+    var statusBox = document.getElementById('statusJson');
+    var logBox    = document.getElementById('logContainer');
+
+    function escapeHtml(s){
+      return String(s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function mountLogUI(logPath){
+      var logFile = (logPath || '').split('/').pop();
+      var html = ''
+        + '<div style="margin:10px 0 0">'
+        + '  <p><strong>Log guardado en:</strong> <code>' + escapeHtml(logPath) + '</code></p>'
+        + '  <div style="margin-top:8px; display:flex; gap:.6rem; flex-wrap:wrap;">'
+        + '    <a class="btn" id="btnViewLog" data-file="' + escapeHtml(logFile) + '" href="#" role="button">Ver log</a>'
+        + '  </div>'
+        + '  <div id="logPanel" class="json" style="display:none; margin-top:12px; white-space:pre-wrap;"></div>'
+        + '</div>';
+      logBox.innerHTML = html;
+    }
+
+    function tick(){
+      tries++;
+      fetch('?check=' + encodeURIComponent(solicitudId) + '&ajax=1', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.status && statusBox) {
+            try {
+              statusBox.textContent = JSON.stringify(data.status, null, 2);
+            } catch (_) { /* noop */ }
+          }
+          if (data && data.logPath) {
+            mountLogUI(data.logPath);
+            clearInterval(timer); timer = null;
+            return;
+          }
+          if (tries >= maxTries) { clearInterval(timer); timer = null; }
+        })
+        .catch(() => { /* silencioso */ });
+    }
+
+    timer = setInterval(tick, every);
+    tick();
+  })();
 
 })();  // <<— IMPORTANTE: cierra la IIFE
 </script>
-
-
-
 
 </body>
 </html>
