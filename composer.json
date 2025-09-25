@@ -1,0 +1,7 @@
+{
+    "name": "php_sired/app",
+    "description": "Proyecto PHP SIRED",
+    "require": {
+        "vlucas/phpdotenv": "5.6"
+    }
+}

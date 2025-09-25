@@ -1,0 +1,45 @@
+# ======================================
+# Archivos sensibles
+# ======================================
+.env
+.env.*
+*.env
+.env.txt
+# Config local (no versionar)
+config.php
+
+
+# ======================================
+# Dependencias de Composer
+# ======================================
+/vendor/
+
+# ======================================
+# Archivos temporales / cache de PHP
+# ======================================
+*.log
+*.cache
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Archivos generados por PHPUnit / tests
+.phpunit.result.cache
+
+# Archivos de IDEs / editores
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ======================================
+# Sistema operativo
+# ======================================
+.DS_Store
+Thumbs.db
+
+# ======================================
+# Otros (ajusta a tu proyecto)
+# ======================================
+/storage/logs/
